@@ -1,0 +1,156 @@
+---
+title: "R Notebook"
+theme: readable
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    fig_width: 12
+    fig_height: 7
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+# Load required libraries
+library(readxl)
+library(combinat)
+library(plyr)
+
+# Import data
+df <- read_excel(path = "analysis_clean.xlsx", sheet = "analysis_new")
+df <- df[, c(5,3,4,6,7,8,9,10)]
+
+# Global variables
+num_vars <- 7  
+
+# Identify dependent and independent variables
+ind_vars <- tail(names(df), num_vars)
+d_var <- names(df)[1]
+
+# Calculate all permutations
+perms <- permn(ind_vars)
+perms_matrix <- matrix(unlist(perms), ncol = num_vars, byrow = TRUE)
+
+# Initialize sums for each variable
+PG_sum <- 0
+SG_sum <- 0
+SF_sum <- 0
+PF_sum <- 0
+C_sum <- 0
+Tm_sum <- 0
+home_sum <- 0
+Residual_sum <- 0
+total_permutations <- nrow(perms_matrix)
+progress_bar <- txtProgressBar(min = 0, max = total_permutations, style = 3)
+
+# Develop models for all permutations and run regressions
+for (i in 1:nrow(perms_matrix)) {
+    model_formula <- as.formula(paste(d_var, "~", paste(perms_matrix[i, ], collapse = "+")))
+    model_fit <- lm(model_formula, data = df)
+    model_results <- anova(model_fit)
+    setTxtProgressBar(progress_bar, i) 
+    # Update sums for each variable present in the model
+    for (var in ind_vars) {
+        if (var %in% row.names(model_results)) {
+            var_sum <- get(paste0(var, "_sum"))  # Get current sum
+            var_sum <- var_sum + model_results[var, "Sum Sq"]  # Update sum
+            assign(paste0(var, "_sum"), var_sum)  # Save updated sum
+        }
+    }
+
+    # Update residuals sum
+    Residual_sum <- Residual_sum + model_results["Residuals", "Sum Sq"]
+}
+
+# Calculate the mean variance for each variable
+total_models <- nrow(perms_matrix)
+pg_mean_variance <- PG_sum / total_models
+sg_mean_variance <- SG_sum / total_models
+sf_mean_variance <- SF_sum / total_models
+pf_mean_variance <- PF_sum / total_models
+c_mean_variance <- C_sum / total_models
+Tm_mean_variance <- Tm_sum / total_models
+Home_mean_variance <- home_sum / total_models
+mean_residuals <- Residual_sum / total_models
+
+# Creating final variance dataframe
+final_variance_total <- data.frame(
+  Variable = c("RESIDUALS","PG","SG","SF","PF","C","TEAM","HOME/AWAY"),
+  Var_Explained = c(mean_residuals,pg_mean_variance, sg_mean_variance, sf_mean_variance, pf_mean_variance, c_mean_variance,Tm_mean_variance,Home_mean_variance)
+)
+
+# Print results 
+print(final_variance_total)
+```
+
+```{r}
+# Load required libraries
+library(readxl)
+library(combinat)
+library(plyr)
+library(parallel)
+
+# Import data
+df <- read_excel(path = "analysis_clean.xlsx", sheet = "analysis_new")
+df <- df[, c(5,3,4,6,7,8,9,10)]
+
+# Global variables
+num_vars <- 7  
+
+# Identify dependent and independent variables
+ind_vars <- tail(names(df), num_vars)
+d_var <- names(df)[1]
+
+# Calculate all permutations
+perms <- permn(ind_vars)
+perms_matrix <- matrix(unlist(perms), ncol = num_vars, byrow = TRUE)
+
+# Number of cores to use
+no_cores <- detectCores() - 1
+
+# Split permutations matrix into chunks for parallel processing
+chunks <- split(perms_matrix, cut(1:nrow(perms_matrix), no_cores))
+
+# Function to process each chunk
+process_chunk <- function(chunk) {
+  results <- data.frame(Variable = c("RESIDUALS","PG","SG","SF","PF","C","TEAM","HOME/AWAY"),
+                        Var_Explained = rep(0, 8))
+  colnames(results) <- c("Variable", "Var_Explained")
+
+  for (i in 1:nrow(chunk)) {
+    model_formula <- as.formula(paste(d_var, "~", paste(chunk[i, ], collapse = "+")))
+    model_fit <- lm(model_formula, data = df)
+    model_results <- anova(model_fit)
+
+    # Update sums for each variable present in the model
+    for (var in ind_vars) {
+      if (var %in% row.names(model_results)) {
+        results[results$Variable == toupper(var), "Var_Explained"] <- 
+          results[results$Variable == toupper(var), "Var_Explained"] + model_results[var, "Sum Sq"]
+      }
+    }
+    # Update residuals sum
+    results[results$Variable == "RESIDUALS", "Var_Explained"] <- 
+      results[results$Variable == "RESIDUALS", "Var_Explained"] + model_results["Residuals", "Sum Sq"]
+  }
+  results
+}
+
+# Run the parallel processing
+cluster <- makeCluster(no_cores)
+clusterExport(cluster, varlist = c("df", "d_var", "ind_vars", "process_chunk"))
+result_list <- parLapply(cluster, chunks, process_chunk)
+stopCluster(cluster)
+
+# Aggregate the results
+final_results <- Reduce(function(x, y) x + y, result_list)
+
+# Calculate the mean variance for each variable
+total_models <- nrow(perms_matrix)
+final_results$Var_Explained <- final_results$Var_Explained / total_models
+
+# Print results 
+print(final_results)
+```
